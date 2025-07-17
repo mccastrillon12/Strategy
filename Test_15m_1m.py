@@ -33,6 +33,10 @@ if resistencia is None or soporte is None:
 
 print(f"🟣 Niveles fijos ➜  Resistencia: {resistencia:.5f} | Soporte: {soporte:.5f}")
 
+# === BANDERAS DE RUPTURA ===
+rompimiento_alcista_detectado = False
+rompimiento_bajista_detectado = False
+
 # === BUCLE DE MONITOREO EN TIEMPO REAL ===
 print("⏳ Esperando cierre de velas M1... (Ctrl+C para detener)")
 
@@ -57,22 +61,26 @@ try:
         cuerpo_bajo = min(vela['open'], vela['close'])
         mitad_cuerpo = cuerpo * 0.5
 
-        # Calcular y mostrar las mechas
         mecha_superior = vela['high'] - cuerpo_alto
         mecha_inferior = cuerpo_bajo - vela['low']
- 
 
         hora_vela = datetime.fromtimestamp(cierre_ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
 
-        # Validar ruptura con condición del 50% del cuerpo por fuera
-        if vela['close'] > resistencia and (cuerpo_alto - resistencia) >= mitad_cuerpo:
+        if not rompimiento_alcista_detectado and vela['close'] > resistencia and (cuerpo_alto - resistencia) >= mitad_cuerpo:
             print(f"🚀 Ruptura ALCISTA | Vela cerró a las {hora_vela} UTC | Cuerpo por encima: {cuerpo_alto - resistencia:.5f} (≥ 50%)")
             print(f"🔎 Precio mecha superior: {vela['high']:.5f} | Cuerpo alto: {cuerpo_alto:.5f}")
             print(f"🔎 Precio mecha inferior: {vela['low']:.5f} | Cuerpo bajo: {cuerpo_bajo:.5f}")
-        elif vela['close'] < soporte and (soporte - cuerpo_bajo) >= mitad_cuerpo:
+            rompimiento_alcista_detectado = True
+
+        elif not rompimiento_bajista_detectado and vela['close'] < soporte and (soporte - cuerpo_bajo) >= mitad_cuerpo:
             print(f"📉 Ruptura BAJISTA | Vela cerró a las {hora_vela} UTC | Cuerpo por debajo: {soporte - cuerpo_bajo:.5f} (≥ 50%)")
             print(f"🔎 Precio mecha superior: {vela['high']:.5f} | Cuerpo alto: {cuerpo_alto:.5f}")
             print(f"🔎 Precio mecha inferior: {vela['low']:.5f} | Cuerpo bajo: {cuerpo_bajo:.5f}")
+            rompimiento_bajista_detectado = True
+
+        # Si ya ocurrió una ruptura, salimos del bucle
+        if rompimiento_alcista_detectado or rompimiento_bajista_detectado:
+            break
 
         tiempo_restante = 60 - datetime.now(timezone.utc).second
         time.sleep(max(tiempo_restante, 1))
