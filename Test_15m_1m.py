@@ -33,9 +33,32 @@ def calcular_lotes(sl_pips, balance, riesgo_pct):
     return round(lotes, 2)
 
 def abrir_operacion(tipo, precio_entrada, sl, tp):
-    balance = mt5.account_info().balance
+    account = mt5.account_info()
+    if account is None:
+        print("❌ No se pudo obtener información de la cuenta")
+        return
+
+    balance = account.balance
     sl_pips = abs(precio_entrada - sl)
-    lotes = calcular_lotes(sl_pips, balance, risk_percent)
+    riesgo_usd = balance * (risk_percent / 100)
+    valor_pip = 10  # Para 1 lote estándar EURUSD
+    lotes_sugeridos = riesgo_usd / (sl_pips * valor_pip)
+
+    symbol_info = mt5.symbol_info(symbol)
+    if symbol_info is None:
+        print("❌ No se pudo obtener información del símbolo")
+        return
+
+    lote_min = symbol_info.volume_min
+    lote_max = symbol_info.volume_max
+    lote_step = symbol_info.volume_step
+
+    # Redondear el lotaje al múltiplo válido más cercano hacia abajo
+    lotes_ajustados = max(lote_min, min(lote_max, (lotes_sugeridos // lote_step) * lote_step))
+    lotes_final = round(lotes_ajustados, 2)
+
+    print(f"🔍 Lote sugerido: {lotes_sugeridos:.2f} | Ajustado: {lotes_final:.2f}")
+    print(f"ℹ️ Límite del símbolo ➜ Min: {lote_min}, Max: {lote_max}, Step: {lote_step}")
 
     sl = round(sl, 5)
     tp = round(tp, 5)
@@ -44,7 +67,7 @@ def abrir_operacion(tipo, precio_entrada, sl, tp):
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": symbol,
-        "volume": lotes,
+        "volume": lotes_final,
         "type": mt5.ORDER_TYPE_BUY if tipo == "buy" else mt5.ORDER_TYPE_SELL,
         "price": mt5.symbol_info_tick(symbol).ask if tipo == "buy" else mt5.symbol_info_tick(symbol).bid,
         "sl": sl,
@@ -60,7 +83,7 @@ def abrir_operacion(tipo, precio_entrada, sl, tp):
     if result.retcode != mt5.TRADE_RETCODE_DONE:
         print(f"❌ Error al abrir orden: {result.retcode}")
     else:
-        print(f"✅ Orden {tipo.upper()} enviada: Volumen {lotes} | SL: {sl} | TP: {tp}")
+        print(f"✅ Orden {tipo.upper()} enviada: Volumen {lotes_final} | SL: {sl} | TP: {tp}")
 
 # === DETECCIÓN DE NIVELES ===
 resistencia, soporte = detectar_pivotes()
@@ -109,7 +132,7 @@ try:
             print(f"🔎 Precio mecha inferior: {vela['low']:.5f} | Cuerpo bajo: {cuerpo_bajo:.5f}")
             rompimiento_alcista_detectado = True
             sl = vela['low']
-            tp = vela['close'] + 2 * (vela['close'] - sl)
+            tp = vela['close'] + 2 * abs(vela['close'] - sl)
             abrir_operacion("buy", vela['close'], sl, tp)
 
         elif not rompimiento_bajista_detectado and vela['close'] < soporte and (soporte - cuerpo_bajo) >= mitad_cuerpo:
@@ -119,7 +142,7 @@ try:
             
             rompimiento_bajista_detectado = True
             sl = vela['high']
-            tp = vela['close'] - 2 * (sl - vela['close'])
+            tp = vela['close'] - 2 * abs(sl - vela['close'])
             abrir_operacion("sell", vela['close'], sl, tp)
 
         # Si ya ocurrió una ruptura, salimos del bucle
