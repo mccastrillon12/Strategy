@@ -4,12 +4,13 @@ import time
 from datetime import datetime, timezone
 
 symbol = "EURUSD"
+risk_percent = 1  # % de riesgo por operación
 
 # === CONEXIÓN A MT5 ===
 if not mt5.initialize():
     raise RuntimeError("❌ No se pudo conectar a MT5")
 
-# === FUNCIÓN PARA DETECTAR ÚLTIMO SOPORTE Y RESISTENCIA EN M1 ===
+# === FUNCIONES ===
 def detectar_pivotes():
     rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 200)
     if rates is None or len(rates) < 3:
@@ -25,7 +26,43 @@ def detectar_pivotes():
         return None, None
     return piv_alto[-1], piv_bajo[-1]
 
-# === CALCULAR NIVELES UNA SOLA VEZ ===
+def calcular_lotes(sl_pips, balance, riesgo_pct):
+    riesgo = balance * (riesgo_pct / 100)
+    valor_pip = 10  # Asumiendo 1 lote estándar en EURUSD
+    lotes = riesgo / (sl_pips * valor_pip)
+    return round(lotes, 2)
+
+def abrir_operacion(tipo, precio_entrada, sl, tp):
+    balance = mt5.account_info().balance
+    sl_pips = abs(precio_entrada - sl)
+    lotes = calcular_lotes(sl_pips, balance, risk_percent)
+
+    sl = round(sl, 5)
+    tp = round(tp, 5)
+    precio_entrada = round(precio_entrada, 5)
+
+    request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": lotes,
+        "type": mt5.ORDER_TYPE_BUY if tipo == "buy" else mt5.ORDER_TYPE_SELL,
+        "price": mt5.symbol_info_tick(symbol).ask if tipo == "buy" else mt5.symbol_info_tick(symbol).bid,
+        "sl": sl,
+        "tp": tp,
+        "deviation": 10,
+        "magic": 123456,
+        "comment": "Ruptura estructura",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_IOC,
+    }
+
+    result = mt5.order_send(request)
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        print(f"❌ Error al abrir orden: {result.retcode}")
+    else:
+        print(f"✅ Orden {tipo.upper()} enviada: Volumen {lotes} | SL: {sl} | TP: {tp}")
+
+# === DETECCIÓN DE NIVELES ===
 resistencia, soporte = detectar_pivotes()
 if resistencia is None or soporte is None:
     mt5.shutdown()
@@ -67,16 +104,23 @@ try:
         hora_vela = datetime.fromtimestamp(cierre_ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
 
         if not rompimiento_alcista_detectado and vela['close'] > resistencia and (cuerpo_alto - resistencia) >= mitad_cuerpo:
-            print(f"🚀 Ruptura ALCISTA | Vela cerró a las {hora_vela} UTC | Cuerpo por encima: {cuerpo_alto - resistencia:.5f} (≥ 50%)")
+            print(f"🚀 Ruptura ALCISTA | {hora_vela} UTC")
             print(f"🔎 Precio mecha superior: {vela['high']:.5f} | Cuerpo alto: {cuerpo_alto:.5f}")
             print(f"🔎 Precio mecha inferior: {vela['low']:.5f} | Cuerpo bajo: {cuerpo_bajo:.5f}")
             rompimiento_alcista_detectado = True
+            sl = vela['low']
+            tp = vela['close'] + 2 * (vela['close'] - sl)
+            abrir_operacion("buy", vela['close'], sl, tp)
 
         elif not rompimiento_bajista_detectado and vela['close'] < soporte and (soporte - cuerpo_bajo) >= mitad_cuerpo:
-            print(f"📉 Ruptura BAJISTA | Vela cerró a las {hora_vela} UTC | Cuerpo por debajo: {soporte - cuerpo_bajo:.5f} (≥ 50%)")
+            print(f"📉 Ruptura BAJISTA | {hora_vela} UTC")
             print(f"🔎 Precio mecha superior: {vela['high']:.5f} | Cuerpo alto: {cuerpo_alto:.5f}")
             print(f"🔎 Precio mecha inferior: {vela['low']:.5f} | Cuerpo bajo: {cuerpo_bajo:.5f}")
+            
             rompimiento_bajista_detectado = True
+            sl = vela['high']
+            tp = vela['close'] - 2 * (sl - vela['close'])
+            abrir_operacion("sell", vela['close'], sl, tp)
 
         # Si ya ocurrió una ruptura, salimos del bucle
         if rompimiento_alcista_detectado or rompimiento_bajista_detectado:
