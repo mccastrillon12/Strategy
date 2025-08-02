@@ -20,8 +20,10 @@ if not mt5.initialize():
 rates = mt5.copy_rates_range(symbol, mt5.TIMEFRAME_M1, start_date, datetime.now())
 df = pd.DataFrame(rates)
 df['time'] = pd.to_datetime(df['time'], unit='s')
-df['hora_ny'] = df['time'].dt.tz_localize('UTC').dt.tz_convert('America/New_York')
+df['hora_col'] = df['time'].dt.tz_localize('UTC').dt.tz_convert('America/Bogota')
 
+# Mostrar hora de la última vela
+print(f"🕒 Última vela Colombia: {df['hora_col'].iloc[-1].strftime('%Y-%m-%d %H:%M:%S')}")
 
 # === RSI ===
 df['rsi'] = RSIIndicator(close=df['close'], window=14).rsi()
@@ -49,15 +51,15 @@ operaciones = []
 operaciones_excel = []
 
 for i in range(15, len(df) - 11):
-    hora = df.iloc[i]['hora_ny'].hour
-    if not (8 <= hora <= 11):
+    hora = df.iloc[i]['hora_col'].hour
+    if not (8 <= hora <= 11):  # Horario Colombia
         continue
 
     row = df.iloc[i]
     rsi = row['rsi']
     entry = row['close']
     siguiente = df.iloc[i + 1]
-    fecha_op = row['hora_ny'].date()
+    fecha_op = row['hora_col'].date()
 
     if rsi < 30 and es_pin_bar_bullish(row) and siguiente['close'] > siguiente['open']:
         sl = row['low']
@@ -104,8 +106,8 @@ for i in range(15, len(df) - 11):
         capital.append(balance)
         operaciones.append((fecha_op, resultado))
 
-        hora_ejecucion = row['hora_ny']
-        hora_cierre = df.iloc[j]['hora_ny']
+        hora_ejecucion = row['hora_col']
+        hora_cierre = df.iloc[j]['hora_col']
         operaciones_excel.append({
             "Fecha": fecha_op,
             "Hora entrada": hora_ejecucion.strftime('%H:%M:%S'),
@@ -122,7 +124,7 @@ total_trades = wins + losses
 winrate = (wins / total_trades) * 100 if total_trades > 0 else 0
 ganancia_total = balance - initial_balance
 
-print("\n📊 RESULTADOS BACKTEST (RSI + Pin Bar + Confirmación + Horario NY 8–11 a.m.)")
+print("\n📊 RESULTADOS BACKTEST (RSI + Pin Bar + Confirmación + Horario COL 8–11 a.m.)")
 print(f"➤ Balance inicial: ${initial_balance}")
 print(f"➤ Balance final:   ${round(balance, 2)}")
 print(f"➤ Total operaciones: {total_trades}")
@@ -140,13 +142,9 @@ if not df_op.empty:
         resumen = []
         total = 0
         for r in grupo["resultado"]:
-            if r > 0:
-                resumen.append("ganada")
-            else:
-                resumen.append("perdida")
+            resumen.append("ganada" if r > 0 else "perdida")
             total += r
-        resultado_dia = " ".join(resumen)
-        print(f"{fecha.strftime('%d/%m/%y')} ➤ {resultado_dia} = ${round(total, 2)}")
+        print(f"{fecha.strftime('%d/%m/%y')} ➤ {' '.join(resumen)} = ${round(total, 2)}")
 
     perdida_por_dia = df_op.groupby("fecha")["resultado"].sum()
     dia_peor = perdida_por_dia.idxmin()
