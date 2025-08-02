@@ -132,7 +132,7 @@ try:
             print(f"🔎 Precio mecha inferior: {vela['low']:.5f} | Cuerpo bajo: {cuerpo_bajo:.5f}")
             rompimiento_alcista_detectado = True
             sl = vela['low']
-            tp = vela['close'] + 2 * abs(vela['close'] - sl)
+            tp = vela['close'] + (2 * abs(vela['close']) - sl)
             abrir_operacion("buy", vela['close'], sl, tp)
 
         elif not rompimiento_bajista_detectado and vela['close'] < soporte and (soporte - cuerpo_bajo) >= mitad_cuerpo:
@@ -142,7 +142,7 @@ try:
             
             rompimiento_bajista_detectado = True
             sl = vela['high']
-            tp = vela['close'] - 2 * abs(sl - vela['close'])
+            tp = vela['close'] - (2 * abs(sl - vela['close']))
             abrir_operacion("sell", vela['close'], sl, tp)
 
         # Si ya ocurrió una ruptura, salimos del bucle
