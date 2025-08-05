@@ -10,7 +10,7 @@ import time
 
 # === PARÁMETROS ===
 symbol = "EURUSD"
-risk_percent = 1
+risk_percent = 0.5
 timezone = pytz.timezone("America/Bogota")
 
 # === DATOS EMAIL ===
@@ -108,19 +108,38 @@ while True:
         tp = entry - sl_distance
         direction = "sell"
 
-    if direction is None:
+    if direction is None or sl_distance <= 0:
         time.sleep(30)
         continue
 
-    # === CÁLCULO DEL LOTE ===
-    balance_actual = mt5.account_info().balance
-    riesgo = balance_actual * (risk_percent / 100)
-    lot_size = round(riesgo / sl_distance, 2)
-
-    if lot_size < 0.01:
-        enviar_correo("⛔ Operación NO ejecutada", f"El lotaje calculado es demasiado bajo: {lot_size}")
+    # === INFO DEL SÍMBOLO ===
+    symbol_info = mt5.symbol_info(symbol)
+    if symbol_info is None:
+        enviar_correo("⛔ Error", f"No se pudo obtener información del símbolo {symbol}")
         time.sleep(60)
         continue
+
+    volume_min = symbol_info.volume_min
+    volume_max = symbol_info.volume_max
+    volume_step = symbol_info.volume_step
+
+    # === CÁLCULO DEL LOTE CON AJUSTES ===
+    balance_actual = mt5.account_info().balance
+    riesgo = balance_actual * (risk_percent / 100)
+    raw_lot = riesgo / sl_distance
+
+    # Redondear al step permitido
+    pasos = round(raw_lot / volume_step)
+    lot_size = round(pasos * volume_step, 2)
+
+    # Validar límites
+    if lot_size < volume_min:
+        enviar_correo("⛔ Operación NO ejecutada", f"Lotaje calculado ({lot_size}) es menor al mínimo permitido ({volume_min})")
+        time.sleep(60)
+        continue
+    elif lot_size > volume_max:
+        lot_size = round(volume_max, 2)
+        enviar_correo("⚠️ Lotaje ajustado", f"Lotaje calculado era demasiado alto. Se ajustó a máximo permitido: {lot_size}")
 
     # === CREAR ORDEN ===
     ticket = int(datetime.timestamp(datetime.now()))
@@ -161,4 +180,3 @@ Hora ejecución: {ahora.strftime('%H:%M:%S')} (Col)
 
     # Esperar antes de evaluar de nuevo
     time.sleep(60)
-
