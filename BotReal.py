@@ -4,14 +4,14 @@ import numpy as np
 import smtplib
 from email.message import EmailMessage
 from ta.momentum import RSIIndicator
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pytz
 import time
 
 # === PARÁMETROS ===
 symbol = "EURUSD"
 risk_percent = 0.5
-timezone = pytz.timezone("America/Bogota")
+timezone_local = pytz.timezone("America/Bogota")
 
 # === DATOS EMAIL ===
 EMAIL_FROM = "castrillonosorio12@gmail.com"
@@ -46,12 +46,13 @@ print(f"💼 Balance actual: ${account_info.balance:.2f}")
 # === CICLO PRINCIPAL EN TIEMPO REAL ===
 franja_abierta = False
 ultima_hora_impresa = None
+entradas_registradas = set()
 
 while True:
-    ahora = datetime.now(timezone)
+    ahora = datetime.now(timezone_local)
     hora_actual = ahora.hour
 
-    if hora_actual < 8 or hora_actual > 11:
+    if hora_actual < 8 or hora_actual >=11:
         if franja_abierta:
             print("🕒 Franja de operación Cerrada")
             franja_abierta = False
@@ -65,8 +66,9 @@ while True:
         franja_abierta = True
 
     # === OBTENER ÚLTIMAS 100 VELAS ===
-    utc_from = datetime.utcnow() - timedelta(minutes=100)
-    rates = mt5.copy_rates_range(symbol, mt5.TIMEFRAME_M1, utc_from, datetime.utcnow())
+    utc_now = datetime.now(timezone.utc)
+    utc_from = utc_now - timedelta(minutes=100)
+    rates = mt5.copy_rates_range(symbol, mt5.TIMEFRAME_M1, utc_from, utc_now)
     df = pd.DataFrame(rates)
     if df.empty or len(df) < 15:
         time.sleep(60)
@@ -75,11 +77,6 @@ while True:
     df['time'] = pd.to_datetime(df['time'], unit='s')
     df['hora_col'] = df['time'].dt.tz_localize('UTC').dt.tz_convert('America/Bogota')
     df['rsi'] = RSIIndicator(close=df['close'], window=14).rsi()
-
-    # === CONDICIONES DE ENTRADA ===
-    i = len(df) - 2
-    row = df.iloc[i]
-    siguiente = df.iloc[i + 1]
 
     def es_pin_bar_bullish(row):
         cuerpo = abs(row['close'] - row['open'])
@@ -93,90 +90,114 @@ while True:
         mecha_inferior = row['open'] - row['low'] if row['close'] < row['open'] else row['close'] - row['low']
         return mecha_superior > 2 * cuerpo and mecha_superior > mecha_inferior
 
-    rsi = row['rsi']
-    entry = row['close']
-    direction = None
+    # === EVALUAR ÚLTIMAS 10 VELAS ===
+    for i in range(len(df) - 11, len(df) - 1):
+        row = df.iloc[i]
+        siguiente = df.iloc[i + 1]
+        timestamp = row['time']
 
-    if rsi < 30 and es_pin_bar_bullish(row) and siguiente['close'] > siguiente['open']:
-        sl = row['low']
-        sl_distance = entry - sl
-        tp = entry + sl_distance
-        direction = "buy"
-    elif rsi > 70 and es_pin_bar_bearish(row) and siguiente['close'] < siguiente['open']:
-        sl = row['high']
-        sl_distance = sl - entry
-        tp = entry - sl_distance
-        direction = "sell"
+        if timestamp in entradas_registradas:
+            continue
 
-    if direction is None or sl_distance <= 0:
-        time.sleep(30)
-        continue
+        rsi = row['rsi']
+        entry = row['close']
+        direction = None
 
-    # === INFO DEL SÍMBOLO ===
-    symbol_info = mt5.symbol_info(symbol)
-    if symbol_info is None:
-        enviar_correo("⛔ Error", f"No se pudo obtener información del símbolo {symbol}")
-        time.sleep(60)
-        continue
+        if rsi < 30 and es_pin_bar_bullish(row) and siguiente['close'] > siguiente['open']:
+            sl = row['low']
+            sl_distance = entry - sl
+            tp = entry + sl_distance
+            direction = "buy"
+        elif rsi > 70 and es_pin_bar_bearish(row) and siguiente['close'] < siguiente['open']:
+            sl = row['high']
+            sl_distance = sl - entry
+            tp = entry - sl_distance
+            direction = "sell"
 
-    volume_min = symbol_info.volume_min
-    volume_max = symbol_info.volume_max
-    volume_step = symbol_info.volume_step
+        if direction is None or sl_distance <= 0:
+            continue
 
-    # === CÁLCULO DEL LOTE CON AJUSTES ===
-    balance_actual = mt5.account_info().balance
-    riesgo = balance_actual * (risk_percent / 100)
-    raw_lot = riesgo / sl_distance
+        entradas_registradas.add(timestamp)
 
-    # Redondear al step permitido
-    pasos = round(raw_lot / volume_step)
-    lot_size = round(pasos * volume_step, 2)
+        # === INFO DEL SÍMBOLO ===
+        symbol_info = mt5.symbol_info(symbol)
+        if symbol_info is None:
+            enviar_correo("⛔ Error", f"No se pudo obtener información del símbolo {symbol}")
+            continue
 
-    # Validar límites
-    if lot_size < volume_min:
-        enviar_correo("⛔ Operación NO ejecutada", f"Lotaje calculado ({lot_size}) es menor al mínimo permitido ({volume_min})")
-        time.sleep(60)
-        continue
-    elif lot_size > volume_max:
-        lot_size = round(volume_max, 2)
-        enviar_correo("⚠️ Lotaje ajustado", f"Lotaje calculado era demasiado alto. Se ajustó a máximo permitido: {lot_size}")
+        volume_min = symbol_info.volume_min
+        volume_max = symbol_info.volume_max
+        volume_step = symbol_info.volume_step
 
-    # === CREAR ORDEN ===
-    ticket = int(datetime.timestamp(datetime.now()))
+        # === CÁLCULO DEL LOTE CON RIESGO AJUSTADO ===
+        balance_actual = mt5.account_info().balance
+        riesgo_maximo = balance_actual * (risk_percent / 100)
 
-    request = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": symbol,
-        "volume": lot_size,
-        "type": mt5.ORDER_TYPE_BUY if direction == "buy" else mt5.ORDER_TYPE_SELL,
-        "price": mt5.symbol_info_tick(symbol).ask if direction == "buy" else mt5.symbol_info_tick(symbol).bid,
-        "sl": round(sl, 5),
-        "tp": round(tp, 5),
-        "deviation": 10,
-        "magic": ticket,
-        "comment": "RSI + Pin Bar + Confirmación",
-        "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
-    }
+        if sl_distance == 0:
+            continue
 
-    result = mt5.order_send(request)
+        # Calcular lote máximo para no exceder el riesgo
+        max_lot_permitido = riesgo_maximo / sl_distance
+        lot_size = max(volume_min, min(max_lot_permitido, volume_max))
 
-    if result.retcode != mt5.TRADE_RETCODE_DONE:
-        error_msg = f"❌ Error al ejecutar operación: {result.comment}"
-        print(error_msg)
-        enviar_correo("⛔ Operación NO ejecutada", error_msg)
-    else:
-        operacion_msg = f"""✅ OPERACIÓN EJECUTADA
+        # Ajustar al paso permitido
+        pasos = round(lot_size / volume_step)
+        lot_size = round(pasos * volume_step, 2)
+
+        # Verificar riesgo real con lote ajustado
+        riesgo_real = lot_size * sl_distance
+
+        if riesgo_real > riesgo_maximo:
+            mensaje = f"""⛔ Operación cancelada
+El lotaje ajustado ({lot_size}) genera un riesgo de ${riesgo_real:.2f},
+que excede el riesgo permitido de ${riesgo_maximo:.2f}."""
+            print(mensaje)
+            enviar_correo("⛔ Operación NO ejecutada", mensaje)
+            continue
+
+        if lot_size < volume_min:
+            mensaje = f"⛔ Lotaje calculado ({lot_size}) es menor al mínimo permitido ({volume_min})"
+            print(mensaje)
+            enviar_correo("⛔ Operación NO ejecutada", mensaje)
+            continue
+
+        # === CREAR ORDEN ===
+        ticket = int(datetime.timestamp(datetime.now()))
+
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": lot_size,
+            "type": mt5.ORDER_TYPE_BUY if direction == "buy" else mt5.ORDER_TYPE_SELL,
+            "price": mt5.symbol_info_tick(symbol).ask if direction == "buy" else mt5.symbol_info_tick(symbol).bid,
+            "sl": round(sl, 5),
+            "tp": round(tp, 5),
+            "deviation": 10,
+            "magic": ticket,
+            "comment": "RSI + Pin Bar + Confirmación",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+
+        result = mt5.order_send(request)
+
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            error_msg = f"❌ Error al ejecutar operación: {result.comment}"
+            print(error_msg)
+            enviar_correo("⛔ Operación NO ejecutada", error_msg)
+        else:
+            hora_entrada = row['hora_col'].strftime('%H:%M:%S')
+            operacion_msg = f"""✅ OPERACIÓN EJECUTADA
 Tipo: {direction.upper()}
 Precio entrada: {entry}
 SL: {round(sl, 5)}
 TP: {round(tp, 5)}
-Lotaje: {lot_size}
+Lotaje ejecutado: {lot_size}
+Riesgo real: ${riesgo_real:.2f}
 Balance actual: ${balance_actual:.2f}
-Hora ejecución: {ahora.strftime('%H:%M:%S')} (Col)
+Hora ejecución: {hora_entrada} (Col)
 """
-        print(operacion_msg)
-        enviar_correo("✅ Operación ejecutada", operacion_msg)
+            print(operacion_msg)
+            enviar_correo("✅ Operación ejecutada", operacion_msg)
 
-    # Esperar antes de evaluar de nuevo
     time.sleep(60)

@@ -63,13 +63,13 @@ for i in range(15, len(df) - 11):
 
     if rsi < 30 and es_pin_bar_bullish(row) and siguiente['close'] > siguiente['open']:
         sl = row['low']
-        sl_distance = entry - sl
-        tp = entry + sl_distance
+        sl_distance = entry - sl* 2
+        tp = entry + sl_distance* 2
         direction = "buy"
     elif rsi > 70 and es_pin_bar_bearish(row) and siguiente['close'] < siguiente['open']:
         sl = row['high']
-        sl_distance = sl - entry
-        tp = entry - sl_distance
+        sl_distance = sl - entry* 2
+        tp = entry - sl_distance * 2
         direction = "sell"
     else:
         continue
